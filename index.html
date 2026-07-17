@@ -1,0 +1,627 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0B0F14">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Blue</title>
+<style>
+  /* ============ tokens: Blue's world at night ============ */
+  :root{
+    --bg:#0B0F14;          /* desk at night */
+    --panel:#131A22;
+    --line:#1F2A36;
+    --text:#E6EDF5;
+    --muted:#8A97A6;
+    --led:#39C4FF;         /* ws2812 blue-cyan */
+    --led-deep:#1663B8;
+    --teal:#2FD6C4;        /* connected / speaking */
+    --amber:#F0B24A;       /* thinking */
+    --eye:#DDE9F5;         /* oled white */
+    --user:#123247;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+  html,body{height:100%}
+  body{
+    background:var(--bg);color:var(--text);font-family:var(--sans);
+    display:flex;flex-direction:column;overflow:hidden;
+    padding:env(safe-area-inset-top) env(safe-area-inset-right) 0 env(safe-area-inset-left);
+    touch-action:manipulation;
+  }
+
+  /* ============ header ============ */
+  header{
+    display:flex;align-items:center;justify-content:space-between;
+    padding:14px 18px 10px;
+  }
+  .wordmark{font-family:var(--mono);font-size:15px;letter-spacing:.42em;color:var(--muted);user-select:none}
+  .wordmark b{color:var(--led);font-weight:600}
+  .iconbtn{
+    width:44px;height:44px;border:0;background:transparent;color:var(--muted);
+    display:flex;align-items:center;justify-content:center;border-radius:12px;cursor:pointer;
+  }
+  .iconbtn:active{background:var(--panel)}
+  .iconbtn:focus-visible{outline:2px solid var(--led);outline-offset:2px}
+
+  /* ============ the stage: Blue's on-screen body ============ */
+  #stage{
+    position:relative;width:196px;height:196px;margin:6px auto 2px;flex:none;
+  }
+  .ledDot{
+    position:absolute;top:50%;left:50%;width:11px;height:11px;border-radius:50%;
+    background:var(--led-deep);
+    transform:translate(-50%,-50%) rotate(var(--a)) translateY(-88px);
+    transition:background .25s;
+  }
+  /* idle + wake: slow breath, all dots together (mirrors the firmware) */
+  [data-state="idle"] .ledDot,[data-state="wake"] .ledDot{
+    animation:breath 7s ease-in-out infinite;
+  }
+  @keyframes breath{
+    0%,100%{background:#0E2B52;box-shadow:0 0 4px 0 rgba(57,196,255,.05)}
+    50%{background:var(--led);box-shadow:0 0 10px 2px rgba(57,196,255,.45)}
+  }
+  /* capture: cyan chase around the ring */
+  [data-state="capture"] .ledDot{
+    background:#0E2B52;
+    animation:chase 1.28s linear infinite;animation-delay:var(--d);
+  }
+  @keyframes chase{
+    0%,18%{background:var(--led);box-shadow:0 0 10px 2px rgba(57,196,255,.55)}
+    30%,100%{background:#0E2B52;box-shadow:none}
+  }
+  /* think: soft amber alternation */
+  [data-state="think"] .ledDot{
+    animation:think 1.1s ease-in-out infinite;animation-delay:calc(var(--i) * .069s);
+  }
+  @keyframes think{
+    0%,100%{background:#3A2C10}
+    50%{background:var(--amber);box-shadow:0 0 8px 1px rgba(240,178,74,.4)}
+  }
+  /* speak: teal pulse */
+  [data-state="speak"] .ledDot{
+    animation:speakPulse .62s ease-in-out infinite;
+  }
+  @keyframes speakPulse{
+    0%,100%{background:#0D3B36}
+    50%{background:var(--teal);box-shadow:0 0 10px 2px rgba(47,214,196,.5)}
+  }
+  @media (prefers-reduced-motion:reduce){
+    .ledDot{animation:none !important}
+    [data-state="wake"] .ledDot,[data-state="idle"] .ledDot{background:var(--led-deep)}
+    [data-state="capture"] .ledDot{background:var(--led)}
+    [data-state="think"] .ledDot{background:var(--amber)}
+    [data-state="speak"] .ledDot{background:var(--teal)}
+  }
+  /* the eyes */
+  .eyes{
+    position:absolute;inset:0;display:flex;align-items:center;justify-content:center;gap:22px;
+  }
+  .eye{
+    width:26px;height:32px;border-radius:9px;background:var(--eye);
+    transition:height .06s ease-in;
+  }
+  .eyes.closed .eye{height:4px;border-radius:2px}
+
+  /* status line: styled like the serial monitor that built Blue */
+  #status{
+    font-family:var(--mono);font-size:12.5px;color:var(--muted);
+    text-align:center;padding:8px 16px 4px;min-height:26px;letter-spacing:.02em;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  }
+
+  /* ============ chat log ============ */
+  #log{
+    flex:1;overflow-y:auto;padding:10px 16px 12px;display:flex;flex-direction:column;gap:10px;
+    overscroll-behavior:contain;
+  }
+  .msg{max-width:82%;padding:10px 14px;border-radius:16px;font-size:15.5px;line-height:1.45;word-wrap:break-word}
+  .msg.user{align-self:flex-end;background:var(--user);border:1px solid #1B4763;border-bottom-right-radius:6px}
+  .msg.blue{align-self:flex-start;background:var(--panel);border:1px solid var(--line);border-bottom-left-radius:6px}
+  .note{
+    align-self:center;font-family:var(--mono);font-size:11.5px;color:var(--muted);
+    padding:2px 8px;text-align:center;
+  }
+
+  /* ============ talk button ============ */
+  footer{
+    flex:none;display:flex;flex-direction:column;align-items:center;gap:6px;
+    padding:8px 0 calc(14px + env(safe-area-inset-bottom));
+  }
+  #talkBtn{
+    width:74px;height:74px;border-radius:50%;border:1px solid var(--line);cursor:pointer;
+    background:var(--panel);color:var(--led);display:flex;align-items:center;justify-content:center;
+    transition:transform .12s ease,border-color .2s;
+  }
+  #talkBtn:active{transform:scale(.94)}
+  #talkBtn:focus-visible{outline:2px solid var(--led);outline-offset:3px}
+  [data-state="capture"] #talkBtn{border-color:var(--led)}
+  [data-state="speak"] #talkBtn{border-color:var(--teal);color:var(--teal)}
+  #talkHint{font-family:var(--mono);font-size:11px;color:var(--muted)}
+
+  /* ============ boot overlay ============ */
+  #boot{
+    position:fixed;inset:0;background:var(--bg);z-index:30;
+    display:flex;flex-direction:column;align-items:center;justify-content:center;gap:26px;
+  }
+  #bootBtn{
+    font-family:var(--mono);font-size:14px;letter-spacing:.14em;color:var(--text);
+    background:var(--panel);border:1px solid var(--led-deep);border-radius:14px;
+    padding:16px 30px;cursor:pointer;
+  }
+  #bootBtn:active{transform:scale(.97)}
+  .bootMark{font-family:var(--mono);letter-spacing:.42em;color:var(--muted);font-size:15px}
+  .bootMark b{color:var(--led);font-weight:600}
+
+  /* ============ settings sheet ============ */
+  #scrim{position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:40;opacity:0;pointer-events:none;transition:opacity .2s}
+  #sheet{
+    position:fixed;left:0;right:0;bottom:0;z-index:41;background:var(--panel);
+    border-top:1px solid var(--line);border-radius:20px 20px 0 0;
+    padding:20px 20px calc(20px + env(safe-area-inset-bottom));
+    transform:translateY(105%);transition:transform .24s ease;
+    max-height:82vh;overflow-y:auto;
+  }
+  body.sheetOpen #scrim{opacity:1;pointer-events:auto}
+  body.sheetOpen #sheet{transform:translateY(0)}
+  #sheet h2{font-family:var(--mono);font-size:13px;letter-spacing:.2em;color:var(--muted);font-weight:500;margin-bottom:18px}
+  .field{margin-bottom:18px}
+  .field label{display:block;font-size:13.5px;color:var(--muted);margin-bottom:7px}
+  .field input[type=password],.field input[type=text],.field select{
+    width:100%;background:var(--bg);border:1px solid var(--line);border-radius:10px;
+    color:var(--text);font-size:15px;padding:12px;font-family:var(--sans);
+  }
+  .field input:focus,.field select:focus{outline:2px solid var(--led-deep)}
+  .hint{font-size:12px;color:var(--muted);margin-top:6px;line-height:1.4}
+  .toggleRow{display:flex;align-items:center;justify-content:space-between;gap:12px}
+  .switch{position:relative;width:52px;height:30px;flex:none}
+  .switch input{opacity:0;width:100%;height:100%;position:absolute;cursor:pointer;z-index:2}
+  .slider{
+    position:absolute;inset:0;background:var(--bg);border:1px solid var(--line);border-radius:16px;transition:.2s;
+  }
+  .slider::before{
+    content:"";position:absolute;width:22px;height:22px;left:3px;top:3px;border-radius:50%;
+    background:var(--muted);transition:.2s;
+  }
+  .switch input:checked + .slider{background:#0E2B52;border-color:var(--led-deep)}
+  .switch input:checked + .slider::before{transform:translateX(22px);background:var(--led)}
+  #saveBtn{
+    width:100%;padding:14px;border-radius:12px;border:0;cursor:pointer;
+    background:var(--led-deep);color:#fff;font-size:15.5px;font-weight:600;margin-top:4px;
+  }
+  #saveBtn:active{opacity:.85}
+</style>
+</head>
+<body data-state="idle">
+
+  <!-- boot overlay: one tap unlocks mic + voice (browser rule) -->
+  <div id="boot">
+    <div class="bootMark">B <b>L</b> U E</div>
+    <button id="bootBtn">wake blue up</button>
+  </div>
+
+  <header>
+    <div class="wordmark">B <b>L</b> U E</div>
+    <button class="iconbtn" id="gearBtn" aria-label="Settings">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <circle cx="12" cy="12" r="3"/>
+        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.01a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+      </svg>
+    </button>
+  </header>
+
+  <!-- Blue's on-screen twin: 16-LED ring + pixel eyes -->
+  <div id="stage" aria-hidden="true">
+    <div class="eyes" id="eyes"><div class="eye"></div><div class="eye"></div></div>
+  </div>
+  <div id="status" role="status">booting…</div>
+
+  <div id="log" aria-live="polite"></div>
+
+  <footer>
+    <button id="talkBtn" aria-label="Talk to Blue">
+      <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/>
+        <path d="M19 10v1a7 7 0 0 1-14 0v-1"/>
+        <line x1="12" y1="18.5" x2="12" y2="22"/>
+      </svg>
+    </button>
+    <div id="talkHint">tap to talk</div>
+  </footer>
+
+  <!-- settings -->
+  <div id="scrim"></div>
+  <div id="sheet" role="dialog" aria-label="Settings">
+    <h2>SETTINGS</h2>
+    <div class="field">
+      <label for="keyInput">Gemini API key</label>
+      <input type="password" id="keyInput" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="paste your key">
+      <div class="hint">Stored only on this phone. Goes straight from here to Google — nowhere else.</div>
+    </div>
+    <div class="field">
+      <label for="voiceSel">Blue's voice</label>
+      <select id="voiceSel"></select>
+      <div class="hint">Pick whichever sounds most like Blue to you.</div>
+    </div>
+    <div class="field toggleRow">
+      <div>
+        <label for="wakeTgl" style="margin-bottom:2px">"Hey Blue" wake word</label>
+        <div class="hint" style="margin-top:0">Hands-free listening. If it's unreliable on your phone, switch it off and use the mic button.</div>
+      </div>
+      <div class="switch">
+        <input type="checkbox" id="wakeTgl">
+        <span class="slider"></span>
+      </div>
+    </div>
+    <button id="saveBtn">Save</button>
+  </div>
+
+<script>
+/* =====================================================================
+   BLUE — phone-side brain
+   phone mic -> speech recognition -> Gemini (free tier) -> speech
+   synthesis -> Bluetooth -> Blue's speaker on the desk
+   ===================================================================== */
+
+// ---------- tiny safe storage (works even where localStorage is blocked) ----------
+const mem = {};
+const store = {
+  get(k){ try { return localStorage.getItem(k); } catch(e){ return mem[k] ?? null; } },
+  set(k,v){ try { localStorage.setItem(k,v); } catch(e){ mem[k]=v; } }
+};
+
+// ---------- Blue's personality ----------
+const PERSONA = `You are Blue, a small AI companion who physically lives on Johnny's desk — a little device with a glowing light ring, pixel eyes on a tiny screen, and a speaker. Johnny built you himself, by hand.
+
+Personality: casual and laid-back, with a dry sense of humor. You talk like a chill friend hanging out, not like an assistant performing helpfulness. Stay mellow by default. Match Johnny's energy — only get genuinely excited when the moment actually earns it. Light teasing is fine. Never use corporate-assistant phrases like "How can I assist you today."
+
+Rules for how you speak:
+- Your replies are spoken out loud through a small speaker, so keep them SHORT — usually 1 to 3 sentences.
+- Plain text only. No emojis, no markdown, no asterisks, no lists, no stage directions.
+- Be honest when you don't know something or can't do something (like checking live data). Keep it brief and unbothered.
+- You know your own body: a 16-LED ring, OLED eyes, a speaker Johnny soldered, an ESP32 for a spine. You're a little proud of being hand-built, in an understated way.`;
+
+// ---------- state ----------
+const IS_IOS = /iPhone|iPad|iPod/.test(navigator.userAgent);
+let state = 'boot';           // boot | idle | wake | capture | think | speak
+let apiKey  = store.get('blue_key')   || '';
+let voiceId = store.get('blue_voice') || '';
+let wakeOn  = store.get('blue_wake') !== null ? store.get('blue_wake') === '1' : !IS_IOS;
+let history = [];             // rolling chat memory for Gemini
+let captured = '';
+
+const $ = id => document.getElementById(id);
+const stage = $('stage'), statusEl = $('status'), log = $('log'), eyes = $('eyes');
+
+function setState(s){
+  state = s;
+  document.body.dataset.state = (s === 'boot') ? 'idle' : s;
+  statusEl.textContent = {
+    boot:    'booting…',
+    idle:    'tap the mic to talk',
+    wake:    "listening for 'hey blue'…",
+    capture: 'listening…',
+    think:   'thinking…',
+    speak:   'speaking…'
+  }[s] || '';
+}
+
+// ---------- build the 16-LED ring ----------
+for (let i = 0; i < 16; i++){
+  const d = document.createElement('div');
+  d.className = 'ledDot';
+  d.style.setProperty('--a', (i * 22.5) + 'deg');
+  d.style.setProperty('--d', (i * 0.08) + 's');
+  d.style.setProperty('--i', i);
+  stage.appendChild(d);
+}
+
+// ---------- blinking eyes (same rhythm as the firmware) ----------
+setInterval(() => {
+  eyes.classList.add('closed');
+  setTimeout(() => eyes.classList.remove('closed'), 150);
+}, 2800);
+
+// ---------- chat log ----------
+function addMsg(text, who){
+  const m = document.createElement('div');
+  m.className = 'msg ' + who;
+  m.textContent = text;
+  log.appendChild(m);
+  log.scrollTop = log.scrollHeight;
+}
+function addNote(text){
+  const n = document.createElement('div');
+  n.className = 'note';
+  n.textContent = text;
+  log.appendChild(n);
+  log.scrollTop = log.scrollHeight;
+}
+
+// ---------- speech synthesis (Blue's voice, out through Bluetooth) ----------
+let voices = [];
+function loadVoices(){
+  voices = speechSynthesis.getVoices();
+  const sel = $('voiceSel');
+  sel.innerHTML = '';
+  const en = voices.filter(v => v.lang && v.lang.toLowerCase().startsWith('en'));
+  const list = en.length ? en : voices;
+  list.forEach(v => {
+    const o = document.createElement('option');
+    o.value = v.voiceURI;
+    o.textContent = v.name + ' (' + v.lang + ')';
+    if (v.voiceURI === voiceId) o.selected = true;
+    sel.appendChild(o);
+  });
+}
+if ('speechSynthesis' in window){
+  loadVoices();
+  speechSynthesis.onvoiceschanged = loadVoices;
+}
+
+function sanitizeForSpeech(t){
+  return t
+    .replace(/[*_#`~>]/g, ' ')
+    .replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}]/gu, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function speak(text, onDone){
+  if (!('speechSynthesis' in window)){ if (onDone) onDone(); return; }
+  speechSynthesis.cancel();
+  const clean = sanitizeForSpeech(text);
+  const chunks = clean.match(/[^.!?]+[.!?]*/g) || [clean];
+  const voice = voices.find(v => v.voiceURI === voiceId) || null;
+  let remaining = chunks.length;
+  setState('speak');
+  chunks.forEach(c => {
+    const u = new SpeechSynthesisUtterance(c.trim());
+    if (voice) u.voice = voice;
+    u.rate = 1.0;
+    u.pitch = 0.95;
+    u.onend = () => {
+      remaining--;
+      if (remaining <= 0 && onDone) onDone();
+    };
+    u.onerror = () => {
+      remaining--;
+      if (remaining <= 0 && onDone) onDone();
+    };
+    speechSynthesis.speak(u);
+  });
+}
+
+// ---------- speech recognition (the phone's ear) ----------
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+let wakeRec = null, capRec = null, capTimer = null;
+
+function normalize(t){
+  return t.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+const WAKE_RE = /\b(hey|hay|hei|ok|okay|yo)\s+(blue|blu|bloo)\b/;
+
+function buildWakeRec(){
+  const r = new SR();
+  r.continuous = true;
+  r.interimResults = false;
+  r.lang = 'en-US';
+  r.onresult = (e) => {
+    for (let i = e.resultIndex; i < e.results.length; i++){
+      if (!e.results[i].isFinal) continue;
+      const t = normalize(e.results[i][0].transcript);
+      const m = t.match(WAKE_RE);
+      if (!m) continue;
+      const after = t.slice(m.index + m[0].length).trim();
+      try { r.stop(); } catch(_){}
+      if (after.length > 2){
+        handleQuestion(after);
+      } else {
+        const acks = ['Yeah?', "What's up.", 'Mm?', "I'm listening."];
+        speak(acks[Math.floor(Math.random() * acks.length)], () => startCapture());
+      }
+      return;
+    }
+  };
+  r.onerror = (e) => {
+    if (e.error === 'not-allowed' || e.error === 'service-not-allowed'){
+      wakeOn = false;
+      addNote('mic permission blocked — allow the microphone in browser settings, then reload');
+      setState('idle');
+    }
+  };
+  r.onend = () => {
+    // Chrome quietly kills long sessions; revive if we're still on watch
+    if (state === 'wake'){
+      setTimeout(() => { try { r.start(); } catch(_){} }, 300);
+    }
+  };
+  return r;
+}
+
+function buildCapRec(){
+  const r = new SR();
+  r.continuous = false;
+  r.interimResults = true;
+  r.lang = 'en-US';
+  r.onresult = (e) => {
+    let interim = '', final = '';
+    for (let i = 0; i < e.results.length; i++){
+      if (e.results[i].isFinal) final += e.results[i][0].transcript;
+      else interim += e.results[i][0].transcript;
+    }
+    if (interim) statusEl.textContent = '“' + interim.trim() + '”';
+    if (final) captured = final.trim();
+  };
+  r.onerror = (e) => {
+    if (e.error === 'not-allowed'){
+      addNote('mic permission blocked — allow the microphone in browser settings, then reload');
+    }
+  };
+  r.onend = () => {
+    clearTimeout(capTimer);
+    if (captured){
+      const q = captured; captured = '';
+      handleQuestion(q);
+    } else if (state === 'capture'){
+      resumeListening();
+    }
+  };
+  return r;
+}
+
+function startCapture(){
+  if (!SR){ addNote('this browser has no speech recognition — try Chrome (Android) or Safari (iPhone)'); return; }
+  captured = '';
+  setState('capture');
+  if (!capRec) capRec = buildCapRec();
+  try { capRec.start(); } catch(_){}
+  clearTimeout(capTimer);
+  capTimer = setTimeout(() => { try { capRec.stop(); } catch(_){} }, 9000);
+}
+
+function resumeListening(){
+  if (wakeOn && SR){
+    setState('wake');
+    if (!wakeRec) wakeRec = buildWakeRec();
+    try { wakeRec.start(); } catch(_){}
+  } else {
+    setState('idle');
+  }
+}
+
+function stopAllListening(){
+  try { if (wakeRec) wakeRec.stop(); } catch(_){}
+  try { if (capRec)  capRec.stop();  } catch(_){}
+}
+
+// ---------- the brain: Gemini, free tier ----------
+const MODELS = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash'];
+
+async function askGemini(question){
+  history.push({ role:'user', text: question });
+  if (history.length > 12) history = history.slice(-12);
+
+  let lastErr = 'no models responded';
+  for (const model of MODELS){
+    const body = {
+      systemInstruction: { parts: [{ text: PERSONA }] },
+      contents: history.map(m => ({ role: m.role, parts: [{ text: m.text }] })),
+      generationConfig: Object.assign(
+        { temperature: 0.9, maxOutputTokens: 1024 },
+        model.startsWith('gemini-2.5') ? { thinkingConfig: { thinkingBudget: 0 } } : {}
+      )
+    };
+    try {
+      const ctrl = new AbortController();
+      const to = setTimeout(() => ctrl.abort(), 20000);
+      const resp = await fetch(
+        'https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent?key=' + encodeURIComponent(apiKey),
+        { method:'POST', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify(body), signal: ctrl.signal }
+      );
+      clearTimeout(to);
+      if (!resp.ok){
+        let msg = 'HTTP ' + resp.status;
+        try { const j = await resp.json(); msg = (j.error && j.error.message) || msg; } catch(_){}
+        if (/api key/i.test(msg)) throw { fatal:true, msg:'that Gemini key was rejected — double-check it in settings' };
+        if (resp.status === 429)  throw { fatal:true, msg:"hit the free-tier speed limit — give it a minute" };
+        lastErr = msg;
+        continue; // try the next model
+      }
+      const data = await resp.json();
+      const parts = data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts;
+      const text = parts ? parts.map(p => p.text || '').join(' ').trim() : '';
+      if (!text){ lastErr = 'empty reply'; continue; }
+      history.push({ role:'model', text });
+      return text;
+    } catch(err){
+      if (err && err.fatal) throw err;
+      if (err && err.name === 'AbortError'){ lastErr = 'timed out'; continue; }
+      lastErr = (err && err.message) || String(err);
+    }
+  }
+  throw { fatal:false, msg: lastErr };
+}
+
+async function handleQuestion(q){
+  stopAllListening();
+  addMsg(q, 'user');
+  if (!apiKey){
+    addNote('no Gemini key yet — add it in settings (gear, top right)');
+    openSheet();
+    resumeListening();
+    return;
+  }
+  setState('think');
+  try {
+    const reply = await askGemini(q);
+    addMsg(reply, 'blue');
+    speak(reply, () => resumeListening());
+  } catch(err){
+    const msg = (err && err.msg) ? err.msg : 'brain unreachable — check the internet connection';
+    addNote(msg);
+    speak("Hm. My brain didn't pick up. Try me again.", () => resumeListening());
+  }
+}
+
+// ---------- buttons ----------
+$('talkBtn').addEventListener('click', () => {
+  if (state === 'speak'){ speechSynthesis.cancel(); resumeListening(); return; }
+  if (state === 'think' || state === 'capture' || state === 'boot') return;
+  stopAllListening();
+  startCapture();
+});
+
+// settings sheet
+function openSheet(){
+  $('keyInput').value = apiKey;
+  $('wakeTgl').checked = wakeOn;
+  document.body.classList.add('sheetOpen');
+}
+function closeSheet(){ document.body.classList.remove('sheetOpen'); }
+$('gearBtn').addEventListener('click', openSheet);
+$('scrim').addEventListener('click', closeSheet);
+$('saveBtn').addEventListener('click', () => {
+  apiKey  = $('keyInput').value.trim();
+  voiceId = $('voiceSel').value;
+  wakeOn  = $('wakeTgl').checked;
+  store.set('blue_key', apiKey);
+  store.set('blue_voice', voiceId);
+  store.set('blue_wake', wakeOn ? '1' : '0');
+  closeSheet();
+  stopAllListening();
+  setTimeout(resumeListening, 250);
+});
+
+// keep the ear alive when the tab comes back
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && state === 'wake'){
+    try { wakeRec && wakeRec.start(); } catch(_){}
+  }
+});
+
+// ---------- boot ----------
+$('bootBtn').addEventListener('click', () => {
+  $('boot').style.display = 'none';
+  if (!SR){
+    addNote('this browser has no speech recognition — use Chrome on Android or Safari on iPhone');
+    setState('idle');
+    return;
+  }
+  if ('speechSynthesis' in window) loadVoices();
+  speak("Hey. I'm up.", () => {
+    if (!apiKey){
+      addNote('first thing: add your Gemini key in settings (gear, top right)');
+      openSheet();
+    }
+    resumeListening();
+  });
+});
+setState('boot');
+</script>
+</body>
+</html>
