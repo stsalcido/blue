@@ -500,51 +500,105 @@ function stopAllListening(){
 }
 
 // ---------- the brain: Gemini, free tier ----------
-const MODELS = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash'];
+// Model names rot (Google retires them on a schedule), so instead of
+// trusting a memorized menu, Blue asks Google for today's menu, ranks
+// it, and remembers whichever model actually answers.
+const SEED_MODELS = ['gemini-3.5-flash', 'gemini-3.1-flash-lite', 'gemini-3-flash-preview', 'gemini-2.5-flash'];
+const AVOID = /embedding|imagen|image|audio|tts|live|veo|aqa|learnlm|robotics/;
+let modelCache = null;
+
+function rankModels(names){
+  const score = n => {
+    let s = 0;
+    const v = n.match(/gemini-(\d+(?:\.\d+)?)/);
+    if (v) s += parseFloat(v[1]) * 100;   // newer generation = higher
+    if (/flash/.test(n)) s += 60;          // fast + free-tier friendly
+    if (/lite/.test(n))  s += 15;          // cheapest lane
+    if (/pro/.test(n))   s -= 120;         // slow + tight free quota
+    if (/preview|exp/.test(n)) s -= 8;     // prefer stable when equal
+    return s;
+  };
+  return names.filter(n => /^gemini-/.test(n) && !AVOID.test(n))
+              .sort((a, b) => score(b) - score(a));
+}
+
+async function discoverModels(){
+  if (modelCache) return modelCache;
+  try {
+    const r = await fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=100&key=' + encodeURIComponent(apiKey));
+    if (!r.ok) return SEED_MODELS;
+    const j = await r.json();
+    const usable = (j.models || [])
+      .filter(m => (m.supportedGenerationMethods || []).includes('generateContent'))
+      .map(m => (m.name || '').replace(/^models\//, ''));
+    const ranked = rankModels(usable);
+    modelCache = ranked.length ? ranked.slice(0, 6) : SEED_MODELS;
+  } catch(_){
+    modelCache = SEED_MODELS;
+  }
+  return modelCache;
+}
+
+async function callModel(model){
+  const body = {
+    systemInstruction: { parts: [{ text: PERSONA }] },
+    contents: history.map(m => ({ role: m.role, parts: [{ text: m.text }] })),
+    generationConfig: { temperature: 0.9, maxOutputTokens: 4096 }
+  };
+  const ctrl = new AbortController();
+  const to = setTimeout(() => ctrl.abort(), 25000);
+  try {
+    const resp = await fetch(
+      'https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent?key=' + encodeURIComponent(apiKey),
+      { method:'POST', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify(body), signal: ctrl.signal }
+    );
+    clearTimeout(to);
+    if (!resp.ok){
+      let msg = 'HTTP ' + resp.status;
+      try { const j = await resp.json(); msg = (j.error && j.error.message) || msg; } catch(_){}
+      if (/api key/i.test(msg)) return { fatal: 'that Gemini key was rejected — double-check it in settings' };
+      return { soft: resp.status, msg };
+    }
+    const data = await resp.json();
+    const parts = data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts;
+    const text = parts ? parts.filter(p => !p.thought).map(p => p.text || '').join(' ').trim() : '';
+    if (!text) return { soft: 0, msg: 'empty reply' };
+    return { text };
+  } catch(err){
+    clearTimeout(to);
+    if (err && err.name === 'AbortError') return { soft: 0, msg: 'timed out' };
+    return { soft: 0, msg: (err && err.message) || String(err) };
+  }
+}
 
 async function askGemini(question){
   history.push({ role:'user', text: question });
   if (history.length > 12) history = history.slice(-12);
 
-  let lastErr = 'no models responded';
-  for (const model of MODELS){
-    const body = {
-      systemInstruction: { parts: [{ text: PERSONA }] },
-      contents: history.map(m => ({ role: m.role, parts: [{ text: m.text }] })),
-      generationConfig: Object.assign(
-        { temperature: 0.9, maxOutputTokens: 1024 },
-        model.startsWith('gemini-2.5') ? { thinkingConfig: { thinkingBudget: 0 } } : {}
-      )
-    };
-    try {
-      const ctrl = new AbortController();
-      const to = setTimeout(() => ctrl.abort(), 20000);
-      const resp = await fetch(
-        'https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent?key=' + encodeURIComponent(apiKey),
-        { method:'POST', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify(body), signal: ctrl.signal }
-      );
-      clearTimeout(to);
-      if (!resp.ok){
-        let msg = 'HTTP ' + resp.status;
-        try { const j = await resp.json(); msg = (j.error && j.error.message) || msg; } catch(_){}
-        if (/api key/i.test(msg)) throw { fatal:true, msg:'that Gemini key was rejected — double-check it in settings' };
-        if (resp.status === 429)  throw { fatal:true, msg:"hit the free-tier speed limit — give it a minute" };
-        lastErr = msg;
-        continue; // try the next model
-      }
-      const data = await resp.json();
-      const parts = data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts;
-      const text = parts ? parts.map(p => p.text || '').join(' ').trim() : '';
-      if (!text){ lastErr = 'empty reply'; continue; }
-      history.push({ role:'model', text });
-      return text;
-    } catch(err){
-      if (err && err.fatal) throw err;
-      if (err && err.name === 'AbortError'){ lastErr = 'timed out'; continue; }
-      lastErr = (err && err.message) || String(err);
+  // lineup: last known winner first, then today's discovered menu
+  const lineup = [];
+  const remembered = store.get('blue_model');
+  if (remembered) lineup.push(remembered);
+  (await discoverModels()).forEach(m => { if (!lineup.includes(m)) lineup.push(m); });
+
+  let lastMsg = 'no models responded', sawNon429 = false, fatalMsg = null;
+  for (const model of lineup){
+    const r = await callModel(model);
+    if (r.fatal){ fatalMsg = r.fatal; break; }
+    if (r.text){
+      store.set('blue_model', model);   // remember the winner
+      history.push({ role:'model', text: r.text });
+      return r.text;
     }
+    if (r.soft !== 429) sawNon429 = true;
+    lastMsg = r.msg;
   }
-  throw { fatal:false, msg: lastErr };
+
+  // total failure: forget the failed turn + stale winner, re-discover next time
+  history.pop();
+  modelCache = null;
+  if (remembered) store.set('blue_model', '');
+  throw { msg: fatalMsg || (sawNon429 ? lastMsg : 'free-tier speed limit — give it a minute and ask again') };
 }
 
 async function handleQuestion(q){
